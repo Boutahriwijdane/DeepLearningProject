@@ -1,124 +1,115 @@
-# FactureFlow — première base de l'application
+# Vérification et classement automatique des factures (CNN + OCR)
 
-React + TypeScript, API FastAPI, PostgreSQL et stockage MinIO.
-L'entraînement reste indépendant : le futur modèle se connecte via un service HTTP.
+Projet de Deep Learning (5IIR-DDSI), réalisé par BELKHOU Zainab et BOUTAHRI Wijdane.
 
-## Ce qui est livré
+Le système classe un document (facture, ticket, autre), détecte les images de mauvaise qualité (floues, mal cadrées), puis extrait par OCR le fournisseur, la date et le total des factures. Il se compose de deux parties reliées par une API HTTP :
 
-- Import JPEG/PNG (10 Mo max), contrôle du format réel, détection de doublons SHA-256.
-- Liste paginée, recherche, filtre de statut, consultation de l'image originale.
-- Analyse en mode démo, ou appel configurable d'un service ML réel.
-- Correction des champs, vérification HT + TVA = TTC, validation manuelle.
-- Historique persistant des actions et des anciennes/nouvelles valeurs corrigées.
-- PostgreSQL pour les données, MinIO pour les images dans Docker Compose.
+- **Service ML** (`ml_service/`) : deux classifieurs MobileNetV2 (transfert d'apprentissage) et Tesseract.
+- **Application FactureFlow** (`backend/`, `frontend/`) : import, correction et validation des documents. Voir `README.md` pour son installation.
 
-Le mode démo ne prédit aucune classe et n'invente aucun champ. Les données peuvent être
-saisies à la main pour tester le parcours complet. La validation démo reste identifiée
-comme telle dans les données et l'interface.
+## Structure du dépôt
 
-## Démarrage conseillé sous Windows
-
-1. Ouvrir Docker Desktop et attendre que son moteur soit démarré.
-2. Ouvrir un terminal PowerShell dans ce dossier (celui qui contient `compose.yaml`).
-3. Exécuter :
-
-```powershell
-Copy-Item .env.example .env
-docker compose up --build -d
+```
+.
+├── README.md                  application FactureFlow
+├── README_ML.md               ce fichier
+├── compose.yaml, .env.example
+├── backend/  frontend/  docs/
+├── ml_service/
+│   ├── service.py             API FastAPI (POST /analyze)
+│   ├── requirements.txt
+│   └── models/                modèles .keras (non versionnés, voir plus bas)
+├── notebooks/
+│   ├── 01_data_and_training.ipynb   données, entraînement, évaluation, OCR
+│   └── 02_service_colab.ipynb       service ML sur Colab (solution de secours)
+└── report/
+    └── fiche_exp.pdf          fiche expérimentale
 ```
 
-Ne pas écraser un `.env` déjà configuré.
+## Résultats
 
-- Application : http://localhost:8080
-- Documentation interactive de l'API : http://localhost:8000/docs
-- Console MinIO : http://localhost:9001
-- PostgreSQL : localhost:55432, base `invoices`, utilisateur `invoice`, mot de passe `invoice_local`
-- MinIO local : `invoice_storage` / `invoice_storage_local`
+| Tâche | Résultat |
+|---|---|
+| Classifieur de type (375 images de test) | exactitude 0,992 ; F1 macro 0,990 |
+| Classifieur de qualité (300 images de test) | exactitude 0,947 ; AUC 0,9953 |
+| OCR, date (96 factures annotées) | 87,5 % |
+| OCR, total (84 factures annotées) | 82,1 % |
+| OCR, fournisseur (73 factures annotées) | 57,5 % exact ; 71,2 % avec similarité ≥ 0,8 |
+| Analyse complète d'une image (PC local, CPU) | environ 3 s |
 
-Les valeurs ci-dessus sont réservées au développement local. Les ports sont liés à 127.0.0.1.
-Les données restent dans les volumes Docker après `docker compose down`.
-Ne pas utiliser `down -v` si tu veux conserver les données.
-Consulter les erreurs avec `docker compose logs backend`.
+Détails, matrices de confusion et courbes : `report/fiche_exp.pdf`.
 
-## Développement avec rechargement automatique
+Ces scores sont probablement surestimés : les données de FATURA sont générées à partir de gabarits (communs à l'entraînement et au test), les défauts de qualité sont synthétiques, et les règles d'extraction ont été ajustées sur ce jeu de données.
 
-Démarrer uniquement PostgreSQL :
+## Installation du service ML (Windows)
+
+Prérequis :
+
+1. **Python 3** (testé avec Python 3.13).
+2. **Tesseract OCR**, avec les données de langue (`eng`, et `fra` si besoin). Chemin par défaut utilisé : `C:\Program Files\Tesseract-OCR\tesseract.exe`.
+3. **Les deux modèles** `invoice_classifier.keras` et `quality_classifier.keras`, à placer dans `ml_service/models/` : [lien Drive à ajouter].
+
+Installation :
 
 ```powershell
-docker compose up -d db
-cd backend
+cd ml_service
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-$env:DATABASE_URL = 'postgresql+psycopg://invoice:invoice_local@localhost:55432/invoices'
-$env:ML_MODE = 'demo'
-$env:STORAGE_MODE = 'local'
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Dans un second terminal :
+## Lancement
+
+Service ML (port 8001) :
 
 ```powershell
-cd frontend
-npm.cmd ci
-npm.cmd run dev
+cd ml_service
+$env:TESSERACT_CMD = 'C:\Program Files\Tesseract-OCR\tesseract.exe'
+$env:TESSDATA_PREFIX = 'C:\tessdata'   # seulement si Tesseract signale un fichier .traineddata introuvable
+.\.venv\Scripts\python.exe service.py
 ```
 
-Ouvrir l'adresse affichée par Vite (habituellement http://localhost:5173).
-Le proxy Vite transmet `/api` au backend sur le port 8000.
-En mode natif les images vont dans `backend/uploads/`; en Compose elles vont dans MinIO.
-Pour un PostgreSQL déjà installé, adapter `DATABASE_URL` et créer la base au préalable.
-La création initiale des tables est automatique ; les évolutions de schéma nécessiteront
-des migrations Alembic avant de travailler sur des données à conserver.
-
-## Organisation
-
-```text
-backend/app/main.py        Routes et règles du parcours documentaire
-backend/app/models.py      Tables PostgreSQL via SQLAlchemy
-backend/app/schemas.py     Validation des champs et contrat de réponse ML
-backend/app/ml.py          Mode démo et adaptateur HTTP vers le service ML
-backend/app/storage.py     Stockage local ou MinIO/S3
-backend/tests/             Tests métier isolés
-frontend/src/main.tsx      Écrans et appels API
-frontend/src/style.css     Interface responsive en français
-docs/CONTRAT_ML.md         Contrat à partager avec la binôme
-compose.yaml              PostgreSQL + MinIO + backend + frontend
-```
-
-## Vérifications
+Test rapide :
 
 ```powershell
-# Depuis backend, avec les dépendances installées
-.\.venv\Scripts\python.exe -m pytest -q
-# Depuis frontend
-npm.cmd run build
+curl.exe -sS -F "file=@C:\chemin\facture.png" http://localhost:8001/analyze
 ```
 
-Les tests backend utilisent une base SQLite temporaire pour isoler le parcours métier.
-Ils ne remplacent pas une vérification d'intégration PostgreSQL/MinIO.
+Application FactureFlow, dans le dossier racine : dans `.env`, définir
 
-## Étapes suivantes
+```
+ML_MODE=remote
+ML_URL=http://host.docker.internal:8001/analyze
+```
 
-1. Lancer l'application et tester une vraie image, remplir puis valider ses champs.
-2. Faire valider le contrat ML avec la binôme, puis connecter son service.
-3. Ajouter authentification et permissions avant tout usage partagé.
-4. Ajouter migrations Alembic, tests d'intégration PostgreSQL/MinIO, puis worker durable.
-5. Ajouter le PDF multipage et enrichir les règles métier selon le périmètre demandé.
+puis `docker compose up -d --build`. L'application est disponible sur http://localhost:8080.
 
-## Limites de cette première version
+## Contrat de l'API
 
-Application locale mono-utilisateur, sans authentification. Pas de PDF, pas de worker,
-pas de contrôle qualité appris ni d'OCR embarqué. L'analyse ML est synchrone et peut
-prendre jusqu'à 90 secondes ; le verrou PostgreSQL empêche les modifications concurrentes
-sur le même document durant cet appel. Les fichiers sont conservés à l'identique.
-Les montants négatifs/avoirs et plusieurs taux de TVA ne sont pas couverts par le formulaire MVP.
-Les doublons sont détectés avant insertion ; une contrainte transactionnelle dédiée reste
-à ajouter pour le cas de deux imports strictement simultanés.
+`POST /analyze`, image JPEG ou PNG envoyée en `multipart/form-data` (champ `file`). Réponse :
 
-Références : [FastAPI](https://fastapi.tiangolo.com/tutorial/request-files/),
-[SQLAlchemy/PostgreSQL](https://docs.sqlalchemy.org/en/20/dialects/postgresql.html),
-[Vite](https://vite.dev/guide/).
+- `mode` (`real`), `model_version`
+- `classification` : `invoice`, `receipt` ou `other`
+- `confidence` : confiance de la classification
+- `quality` : `acceptable` ou `retake_required`
+- `warnings` : liste de messages
+- `ocr_text` : texte reconnu
+- `fields` : `supplier`, `invoice_number`, `invoice_date`, `subtotal`, `tax`, `total`
 
-## Correctif Docker du 5 novembre 2026
+Seuls le fournisseur, la date et le total sont extraits. Les autres champs valent `null`. Spécification complète : `docs/CONTRAT_ML.md`.
 
-Image MinIO remplacée par la distribution Coollabs fixée par digest. Contrôle de disponibilité : mc ready local. PostgreSQL est accessible sur localhost:55432 ; le backend utilise db:5432 dans Docker. Frontend, API, PostgreSQL et lecture/écriture MinIO vérifiés. Aucun besoin de recréer .env.
+## Données et licences
+
+| Jeu de données | Usage | Licence |
+|---|---|---|
+| FATURA (Zenodo) | factures (1 000 images) et évaluation de l'OCR | à vérifier sur la page Zenodo |
+| CORD (Naver Clova) | tickets (1 000 images) | CC BY 4.0 |
+| RVL-CDIP (Hugging Face) | autres documents (500 images) | recherche uniquement |
+
+Les jeux de données ne sont pas inclus dans le dépôt. Le notebook `01_data_and_training.ipynb` les télécharge.
+
+## Limites
+
+- Un seul modèle (MobileNetV2) : pas de comparaison avec VGG19 ou ResNet50.
+- Données synthétiques ou génériques ; aucun test sur de vraies factures.
+- Extraction des champs non prise en charge pour les tickets, et pour le numéro de facture, le montant hors taxes et la TVA.
+- Pas de quantification ni d'optimisation de l'inférence.
