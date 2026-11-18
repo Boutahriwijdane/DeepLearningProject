@@ -14,7 +14,8 @@ def analyze(data: bytes, filename: str, content_type: str) -> MLResult:
     if not url:
         raise RuntimeError('ML_URL manquant')
     with httpx.Client(timeout=90) as client:
-        response = client.post(url, files={'file': (filename, data, content_type)})
+        response = client.post(url, files={'file': (filename, data, content_type)},
+            headers={'ngrok-skip-browser-warning': 'true'})
         response.raise_for_status()
         result = MLResult.model_validate(response.json())
         if result.mode != 'real':

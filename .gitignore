@@ -8,3 +8,10 @@ uploads/
 node_modules/
 dist/
 *.tsbuildinfo
+.venv/
+ml_service/models/
+*.keras
+.env
+__pycache__/
+test_files/
+*.before*
